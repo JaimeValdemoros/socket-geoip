@@ -44,7 +44,7 @@
           inputsFrom = [
             self.packages.${pkgs.system}.socket-geoip
           ];
-          buildInputs = with pkgs; [];
+          buildInputs = with pkgs; [systemfd];
         }
     );
 
