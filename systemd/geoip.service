@@ -1,0 +1,2 @@
+[Service]
+ExecStart=%h/.local/bin/socket-geoip
