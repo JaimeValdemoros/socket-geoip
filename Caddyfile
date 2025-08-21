@@ -1,0 +1,7 @@
+ip.{$DOMAIN} {
+        reverse_proxy / localhost:5680 {
+                transport fastcgi {
+                        env REMOTE {remote}
+                }
+        }
+}
