@@ -14,21 +14,12 @@ fn main() -> anyhow::Result<()> {
         move |mut req| {
             let addr = req.param("REMOTE").unwrap();
             let mut stdout = req.stdout();
-            let _ = write!(stdout, "Content-Type: text/plain\n\n");
+            let _ = write!(stdout, "Content-Type: application/json\n\n");
             let Ok(addr) = addr.parse::<std::net::SocketAddr>() else {
                 return;
             };
-            let _ = write!(stdout, "ip: {}\n", addr.ip());
             if let Ok(Some(city)) = reader.lookup::<maxminddb::geoip2::City>(addr.ip()) {
-                if let (Some(city), Some(country)) = (city.city, city.country) {
-                    if let (Some(city_names), Some(country_names)) = (city.names, country.names) {
-                        let _ = write!(
-                            stdout,
-                            "city: {}\ncountry: {}\n",
-                            city_names["en"], country_names["en"]
-                        );
-                    }
-                }
+                let _ = serde_json::to_writer_pretty(stdout, &city);
             }
         },
         socket.as_raw_fd(),
