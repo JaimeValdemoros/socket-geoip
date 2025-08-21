@@ -39,13 +39,12 @@ fn main() -> anyhow::Result<()> {
                 return;
             };
             let ip = addr.ip();
-            let mut output = serde_json::json!({
-                "ip": ip
-            });
-            if let Ok(Some(city)) = reader.lookup::<maxminddb::geoip2::City>(ip) {
-                if let Ok(serde_json::Value::Object(obj)) = serde_json::to_value(&city) {
-                    output.as_object_mut().map(|m| m.extend(obj));
-                }
+            let mut output = serde_json::Map::new();
+            output.insert("ip".into(), ip.to_string().into());
+            if let Ok(Some(result)) =
+                reader.lookup::<serde_json::Map<String, serde_json::Value>>(ip)
+            {
+                output.extend(result);
             }
             let _ = serde_json::to_writer_pretty(stdout, &output);
         },
