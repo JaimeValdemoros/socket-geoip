@@ -1,8 +1,12 @@
 use std::io::Write;
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use listenfd::ListenFd;
+
+static TICKER: AtomicU64 = AtomicU64::new(0);
 
 fn main() -> anyhow::Result<()> {
     let mut listenfd = ListenFd::from_env();
@@ -10,8 +14,23 @@ fn main() -> anyhow::Result<()> {
     let reader = Arc::new(maxminddb::Reader::open_readfile(
         std::env::var("DB_FILE").unwrap(),
     )?);
+    if let Ok(timeout_secs) = std::env::var("TIMEOUT_SECS") {
+        let timeout = Duration::from_secs(timeout_secs.parse().unwrap());
+        std::thread::spawn(move || {
+            let mut last_ticker = 0;
+            loop {
+                std::thread::sleep(timeout);
+                let new_ticker = TICKER.load(Ordering::Relaxed);
+                if last_ticker == new_ticker {
+                    std::process::exit(0);
+                }
+                last_ticker = new_ticker;
+            }
+        });
+    };
     fastcgi::run_raw(
         move |mut req| {
+            TICKER.fetch_add(1, Ordering::Relaxed);
             let addr = req.param("REMOTE").unwrap();
             let mut stdout = req.stdout();
             let _ = write!(stdout, "Content-Type: application/json\n\n");
