@@ -18,9 +18,16 @@ fn main() -> anyhow::Result<()> {
             let Ok(addr) = addr.parse::<std::net::SocketAddr>() else {
                 return;
             };
-            if let Ok(Some(city)) = reader.lookup::<maxminddb::geoip2::City>(addr.ip()) {
-                let _ = serde_json::to_writer_pretty(stdout, &city);
+            let ip = addr.ip();
+            let mut output = serde_json::json!({
+                "ip": ip
+            });
+            if let Ok(Some(city)) = reader.lookup::<maxminddb::geoip2::City>(ip) {
+                if let Ok(serde_json::Value::Object(obj)) = serde_json::to_value(&city) {
+                    output.as_object_mut().map(|m| m.extend(obj));
+                }
             }
+            let _ = serde_json::to_writer_pretty(stdout, &output);
         },
         socket.as_raw_fd(),
     );
