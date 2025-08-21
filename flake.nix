@@ -3,6 +3,8 @@
     systems.url = "github:nix-systems/default-linux";
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     naersk.url = "github:nix-community/naersk";
+    fenix.url = "github:nix-community/fenix";
+    fenix.inputs.nixpkgs.follows = "nixpkgs";
     treefmt-nix.url = "github:numtide/treefmt-nix";
     treefmt-nix.inputs.nixpkgs.follows = "nixpkgs";
   };
@@ -33,7 +35,7 @@
 
     packages = eachSystem (pkgs: {
       socket-geoip = pkgs.callPackage ./. {
-        inherit (inputs) naersk;
+        inherit (inputs) fenix naersk;
       };
     });
 
