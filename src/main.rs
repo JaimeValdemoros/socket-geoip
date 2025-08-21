@@ -22,6 +22,8 @@ fn main() -> anyhow::Result<()> {
                 std::thread::sleep(timeout);
                 let new_ticker = TICKER.load(Ordering::Relaxed);
                 if last_ticker == new_ticker {
+                    eprintln!("idle, exiting");
+                    eprintln!("{new_ticker} requests served");
                     std::process::exit(0);
                 }
                 last_ticker = new_ticker;
