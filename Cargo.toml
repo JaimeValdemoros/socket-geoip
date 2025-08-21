@@ -7,3 +7,4 @@ edition = "2024"
 anyhow = "1.0.99"
 fastcgi = "1.0.0"
 listenfd = "1.0.2"
+maxminddb = { version = "0.26.0", features = ["mmap"] }
