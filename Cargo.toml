@@ -5,4 +5,5 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.99"
+fastcgi = "1.0.0"
 listenfd = "1.0.2"
