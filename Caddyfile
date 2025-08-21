@@ -5,7 +5,10 @@ ip.{$DOMAIN} {
 		# if there is somehow a 1-byte body, clear it
 		set ""
 	}
-	reverse_proxy / localhost:5680 {
-		transport fastcgi
+	route {
+		reverse_proxy / localhost:5680 {
+			transport fastcgi
+		}
+		respond 404
 	}
 }
