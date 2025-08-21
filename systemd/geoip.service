@@ -1,4 +1,4 @@
 [Service]
-ExecStart=%h/.local/bin/socket-geoip
+ExecStart=%h/.cargo/bin/socket-geoip
 Environment=TIMEOUT_SECS=60
 Environment=DB_FILE=%h/GeoLite2-City.mmdb
