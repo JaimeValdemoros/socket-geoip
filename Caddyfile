@@ -1,4 +1,10 @@
 ip.{$DOMAIN} {
+	request_body {
+		# max_size of 0 is ignored so this is the next best thing
+		max_size 1
+		# if there is somehow a 1-byte body, clear it
+		set ""
+	}
 	reverse_proxy / localhost:5680 {
 		transport fastcgi
 	}
