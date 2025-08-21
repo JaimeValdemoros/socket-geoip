@@ -39,11 +39,10 @@ fn main() -> anyhow::Result<()> {
     fastcgi::run_raw(
         move |mut req| {
             TICKER.fetch_add(1, Ordering::Relaxed);
-            let addr = req.param("REMOTE").unwrap();
-            let Ok(addr) = addr.parse::<std::net::SocketAddr>() else {
+            let addr = req.param("REMOTE_ADDR").unwrap();
+            let Ok(ip) = addr.parse::<std::net::IpAddr>() else {
                 return req.exit(1);
             };
-            let ip = addr.ip();
             let output = Output {
                 ip,
                 data: reader.lookup(ip).unwrap_or(None),
