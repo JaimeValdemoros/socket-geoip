@@ -1,5 +1,4 @@
 use std::io::Write;
-use std::os::fd::AsRawFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -10,7 +9,7 @@ static TICKER: AtomicU64 = AtomicU64::new(0);
 
 fn main() -> anyhow::Result<()> {
     let mut listenfd = ListenFd::from_env();
-    let socket = listenfd.take_tcp_listener(0)?.unwrap();
+    let socket = listenfd.take_raw_fd(0)?.unwrap();
     let reader = Arc::new(maxminddb::Reader::open_readfile(
         std::env::var("DB_FILE").unwrap(),
     )?);
@@ -50,7 +49,7 @@ fn main() -> anyhow::Result<()> {
             }
             let _ = serde_json::to_writer_pretty(stdout, &output);
         },
-        socket.as_raw_fd(),
+        socket,
     );
     Ok(())
 }
