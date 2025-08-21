@@ -8,4 +8,5 @@ anyhow = "1.0.99"
 fastcgi = "1.0.0"
 listenfd = "1.0.2"
 maxminddb = { version = "0.26.0", features = ["mmap"] }
+serde = { version = "1.0.219", features = ["derive"] }
 serde_json = { version = "1.0.143", features = ["preserve_order"] }

@@ -202,6 +202,7 @@ dependencies = [
  "fastcgi",
  "listenfd",
  "maxminddb",
+ "serde",
  "serde_json",
 ]
 

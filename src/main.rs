@@ -7,6 +7,13 @@ use listenfd::ListenFd;
 
 static TICKER: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Debug, serde::Serialize)]
+struct Output<'a> {
+    ip: std::net::IpAddr,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    data: Option<maxminddb::geoip2::City<'a>>,
+}
+
 fn main() -> anyhow::Result<()> {
     let mut listenfd = ListenFd::from_env();
     let socket = listenfd.take_raw_fd(0)?.unwrap();
@@ -33,20 +40,17 @@ fn main() -> anyhow::Result<()> {
         move |mut req| {
             TICKER.fetch_add(1, Ordering::Relaxed);
             let addr = req.param("REMOTE").unwrap();
-            let mut stdout = req.stdout();
-            let _ = write!(stdout, "Content-Type: application/json\n\n");
             let Ok(addr) = addr.parse::<std::net::SocketAddr>() else {
-                return;
+                return req.exit(1);
             };
             let ip = addr.ip();
-            let mut output = serde_json::Map::new();
-            output.insert("ip".into(), ip.to_string().into());
-            if let Ok(Some(result)) =
-                reader.lookup::<serde_json::Map<String, serde_json::Value>>(ip)
-            {
-                output.extend(result);
-            }
-            let _ = serde_json::to_writer_pretty(stdout, &output);
+            let output = Output {
+                ip,
+                data: reader.lookup(ip).unwrap_or(None),
+            };
+            let mut stdout = req.stdout();
+            write!(stdout, "Content-Type: application/json\n\n").unwrap();
+            serde_json::to_writer_pretty(stdout, &output).unwrap();
         },
         socket,
     );
