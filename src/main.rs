@@ -12,14 +12,14 @@ fn main() -> anyhow::Result<()> {
     )?);
     fastcgi::run_raw(
         move |mut req| {
-            let ip = req.param("ip").unwrap();
+            let addr = req.param("REMOTE").unwrap();
             let mut stdout = req.stdout();
             let _ = write!(stdout, "Content-Type: text/plain\n\n");
-            let Ok(ip) = ip.parse::<std::net::IpAddr>() else {
+            let Ok(addr) = addr.parse::<std::net::SocketAddr>() else {
                 return;
             };
-            let _ = write!(stdout, "ip: {ip}\n");
-            if let Ok(Some(city)) = reader.lookup::<maxminddb::geoip2::City>(ip) {
+            let _ = write!(stdout, "ip: {}\n", addr.ip());
+            if let Ok(Some(city)) = reader.lookup::<maxminddb::geoip2::City>(addr.ip()) {
                 if let (Some(city), Some(country)) = (city.city, city.country) {
                     if let (Some(city_names), Some(country_names)) = (city.names, country.names) {
                         let _ = write!(
