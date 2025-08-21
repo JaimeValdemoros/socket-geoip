@@ -10,7 +10,7 @@ static TICKER: AtomicU64 = AtomicU64::new(0);
 fn main() -> anyhow::Result<()> {
     let mut listenfd = ListenFd::from_env();
     let socket = listenfd.take_raw_fd(0)?.unwrap();
-    let reader = Arc::new(maxminddb::Reader::open_readfile(
+    let reader = Arc::new(maxminddb::Reader::open_mmap(
         std::env::var("DB_FILE").unwrap(),
     )?);
     if let Ok(timeout_secs) = std::env::var("TIMEOUT_SECS") {
