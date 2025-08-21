@@ -1,4 +1,5 @@
 use std::io::Write;
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -39,19 +40,30 @@ fn main() -> anyhow::Result<()> {
     fastcgi::run_raw(
         move |mut req| {
             TICKER.fetch_add(1, Ordering::Relaxed);
-            let addr = req.param("REMOTE_ADDR").unwrap();
-            let Ok(ip) = addr.parse::<std::net::IpAddr>() else {
-                return req.exit(1);
-            };
-            let output = Output {
-                ip,
-                data: reader.lookup(ip).unwrap_or(None),
-            };
-            let mut stdout = req.stdout();
-            write!(stdout, "Content-Type: application/json\n\n").unwrap();
-            serde_json::to_writer_pretty(stdout, &output).unwrap();
+            if let Err(e) = handle_req(&reader, &mut req) {
+                eprintln!("{e}");
+                req.exit(1);
+            }
         },
         socket,
     );
+    Ok(())
+}
+
+fn handle_req(
+    reader: &maxminddb::Reader<maxminddb::Mmap>,
+    req: &mut fastcgi::Request,
+) -> anyhow::Result<()> {
+    let Some(addr) = req.param("REMOTE_ADDR") else {
+        anyhow::bail!("No REMOTE_ADDR set");
+    };
+    let ip = addr.parse::<IpAddr>()?;
+    let output = Output {
+        ip,
+        data: reader.lookup(ip)?,
+    };
+    let mut stdout = req.stdout();
+    write!(stdout, "Content-Type: application/json\n\n")?;
+    serde_json::to_writer_pretty(stdout, &output)?;
     Ok(())
 }
