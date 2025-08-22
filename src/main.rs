@@ -1,6 +1,5 @@
 use std::io::Write;
 use std::net::IpAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -18,9 +17,9 @@ struct Output<'a> {
 fn main() -> anyhow::Result<()> {
     let mut listenfd = ListenFd::from_env();
     let socket = listenfd.take_raw_fd(0)?.unwrap();
-    let reader = Arc::new(maxminddb::Reader::open_mmap(
+    let reader = maxminddb::Reader::open_mmap(
         std::env::var("DB_FILE").unwrap(),
-    )?);
+    )?;
     if let Ok(timeout_secs) = std::env::var("TIMEOUT_SECS") {
         let timeout = Duration::from_secs(timeout_secs.parse().unwrap());
         std::thread::spawn(move || {
