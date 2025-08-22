@@ -1,11 +1,22 @@
-use std::io::Write;
 use std::net::IpAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    Arc, OnceLock,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::Duration;
 
 use listenfd::ListenFd;
+use maxminddb::{Mmap, Reader};
+use tokio::{
+    net::{TcpListener, TcpStream, tcp::WriteHalf},
+    task::{LocalSet, spawn_blocking},
+};
+use tokio_fastcgi::{Request, RequestResult, Requests};
+use tokio_util::future::FutureExt;
+use tokio_util::sync::CancellationToken;
 
 static TICKER: AtomicU64 = AtomicU64::new(0);
+static READER: OnceLock<Reader<Mmap>> = OnceLock::new();
 
 #[derive(Debug, serde::Serialize)]
 struct Output<'a> {
@@ -14,56 +25,111 @@ struct Output<'a> {
     data: Option<maxminddb::geoip2::City<'a>>,
 }
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> anyhow::Result<()> {
     let mut listenfd = ListenFd::from_env();
-    let socket = listenfd.take_raw_fd(0)?.unwrap();
-    let reader = std::env::var("DB_FILE")
+    let socket = listenfd.take_tcp_listener(0)?.unwrap();
+    socket.set_nonblocking(true)?;
+    let socket = TcpListener::from_std(socket)?;
+
+    if let Some(reader) = std::env::var("DB_FILE")
         .ok()
-        .map(maxminddb::Reader::open_mmap)
-        .transpose()?;
+        .map(Reader::open_mmap)
+        .transpose()?
+    {
+        READER.set(reader).expect("READER already set");
+    };
+
+    let local = LocalSet::new();
+
+    let shutdown = CancellationToken::new();
+
     if let Ok(timeout_secs) = std::env::var("TIMEOUT_SECS") {
+        let shutdown = shutdown.clone();
         let timeout = Duration::from_secs(timeout_secs.parse().unwrap());
-        std::thread::spawn(move || {
+        local.spawn_local(async move {
             let mut last_ticker = 0;
             loop {
-                std::thread::sleep(timeout);
+                tokio::time::sleep(timeout).await;
                 let new_ticker = TICKER.load(Ordering::Relaxed);
                 if last_ticker == new_ticker {
                     eprintln!("idle, exiting");
                     eprintln!("{new_ticker} requests served");
-                    std::process::exit(0);
+                    shutdown.cancel();
+                    break;
                 }
                 last_ticker = new_ticker;
             }
         });
     };
-    fastcgi::run_raw(
-        move |mut req| {
-            TICKER.fetch_add(1, Ordering::Relaxed);
-            if let Err(e) = handle_req(&mut req, reader.as_ref()) {
-                eprintln!("{e}");
-                req.exit(1);
+
+    let shutdown_clone = shutdown.clone();
+    let res = local
+        .run_until(async move {
+            loop {
+                let connection = socket.accept().await;
+                let stream = match connection {
+                    Ok((stream, _)) => stream,
+                    Err(e) => break e,
+                };
+                let shutdown = shutdown_clone.clone();
+                tokio::task::spawn_local(async move {
+                    if let Err(e) = handle_stream(stream, &shutdown).await {
+                        eprintln!("{e:?}");
+                    }
+                });
             }
-        },
-        socket,
-    );
-    Ok(())
+        })
+        .with_cancellation_token(&shutdown)
+        .await;
+
+    // wait for remaining spawned tasks
+    shutdown.cancel();
+    local.await;
+
+    match res {
+        // run_until hit an error - re-raise it
+        Some(e) => Err(e.into()),
+        // cancellation token was cancelled - exit gracefully
+        None => Ok(()),
+    }
 }
 
-fn handle_req(
-    req: &mut fastcgi::Request,
-    reader: Option<&maxminddb::Reader<maxminddb::Mmap>>,
-) -> anyhow::Result<()> {
-    let Some(addr) = req.param("REMOTE_ADDR") else {
+async fn handle_stream(mut stream: TcpStream, token: &CancellationToken) -> anyhow::Result<()> {
+    let mut requests = Requests::from_split_socket(stream.split(), 10, 10);
+    while let Some(Ok(Some(request))) = requests.next().with_cancellation_token(token).await {
+        TICKER.fetch_add(1, Ordering::Relaxed);
+        request
+            .process(|request| async move {
+                match handle_req(request).await {
+                    Ok(()) => RequestResult::Complete(0),
+                    Err(e) => {
+                        eprintln!("{e}");
+                        RequestResult::Complete(1)
+                    }
+                }
+            })
+            .await?;
+    }
+    anyhow::Ok(())
+}
+
+async fn handle_req(req: Arc<Request<WriteHalf<'_>>>) -> anyhow::Result<()> {
+    let Some(addr) = req.get_str_param("REMOTE_ADDR") else {
         anyhow::bail!("No REMOTE_ADDR set");
     };
     let ip = addr.parse::<IpAddr>()?;
     let output = Output {
         ip,
-        data: reader.map(|r| r.lookup(ip)).transpose()?.flatten(),
+        data: match READER.get() {
+            Some(r) => spawn_blocking(move || r.lookup(ip)).await??,
+            None => None,
+        },
     };
-    let mut stdout = req.stdout();
-    write!(stdout, "Content-Type: application/json\n\n")?;
-    serde_json::to_writer_pretty(stdout, &output)?;
+    let mut stdout = req.get_stdout();
+    stdout.write(b"Content-Type: application/json\n\n").await?;
+    stdout
+        .write(serde_json::to_vec_pretty(&output)?.as_slice())
+        .await?;
     Ok(())
 }
