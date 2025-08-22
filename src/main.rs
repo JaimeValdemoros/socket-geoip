@@ -17,9 +17,10 @@ struct Output<'a> {
 fn main() -> anyhow::Result<()> {
     let mut listenfd = ListenFd::from_env();
     let socket = listenfd.take_raw_fd(0)?.unwrap();
-    let reader = maxminddb::Reader::open_mmap(
-        std::env::var("DB_FILE").unwrap(),
-    )?;
+    let reader = std::env::var("DB_FILE")
+        .ok()
+        .map(maxminddb::Reader::open_mmap)
+        .transpose()?;
     if let Ok(timeout_secs) = std::env::var("TIMEOUT_SECS") {
         let timeout = Duration::from_secs(timeout_secs.parse().unwrap());
         std::thread::spawn(move || {
@@ -39,7 +40,7 @@ fn main() -> anyhow::Result<()> {
     fastcgi::run_raw(
         move |mut req| {
             TICKER.fetch_add(1, Ordering::Relaxed);
-            if let Err(e) = handle_req(&reader, &mut req) {
+            if let Err(e) = handle_req(&mut req, reader.as_ref()) {
                 eprintln!("{e}");
                 req.exit(1);
             }
@@ -50,8 +51,8 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn handle_req(
-    reader: &maxminddb::Reader<maxminddb::Mmap>,
     req: &mut fastcgi::Request,
+    reader: Option<&maxminddb::Reader<maxminddb::Mmap>>,
 ) -> anyhow::Result<()> {
     let Some(addr) = req.param("REMOTE_ADDR") else {
         anyhow::bail!("No REMOTE_ADDR set");
@@ -59,7 +60,7 @@ fn handle_req(
     let ip = addr.parse::<IpAddr>()?;
     let output = Output {
         ip,
-        data: reader.lookup(ip)?,
+        data: reader.map(|r| r.lookup(ip)).transpose()?.flatten(),
     };
     let mut stdout = req.stdout();
     write!(stdout, "Content-Type: application/json\n\n")?;
