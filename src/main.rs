@@ -77,25 +77,27 @@ async fn main() -> anyhow::Result<()> {
         });
     };
 
-    let shutdown_clone = shutdown.clone();
     let res = local
-        .run_until(async move {
-            loop {
-                let connection = socket.accept().await;
-                let (stream, addr) = match connection {
-                    Ok(x) => x,
-                    Err(e) => break e,
-                };
-                eprintln!("New stream: {addr}");
-                let shutdown = shutdown_clone.clone();
-                tokio::task::spawn_local(async move {
-                    if let Err(e) = handle_stream(stream, addr, &shutdown).await {
-                        eprintln!("{e:?}");
-                    }
-                });
+        .run_until({
+            let shutdown = shutdown.clone();
+            async move {
+                loop {
+                    let connection = socket.accept().with_cancellation_token(&shutdown).await;
+                    let (stream, addr) = match connection {
+                        None => break Ok(()),
+                        Some(Err(e)) => break Err(e),
+                        Some(Ok(x)) => x,
+                    };
+                    eprintln!("New stream: {addr}");
+                    let shutdown = shutdown.clone();
+                    tokio::task::spawn_local(async move {
+                        if let Err(e) = handle_stream(stream, addr, &shutdown).await {
+                            eprintln!("{e:?}");
+                        }
+                    });
+                }
             }
         })
-        .with_cancellation_token(&shutdown)
         .await;
 
     // wait for remaining spawned tasks
@@ -104,12 +106,7 @@ async fn main() -> anyhow::Result<()> {
     local.await;
     eprintln!("Done waiting, shutting down");
 
-    match res {
-        // run_until hit an error - re-raise it
-        Some(e) => Err(e.into()),
-        // cancellation token was cancelled - exit gracefully
-        None => Ok(()),
-    }
+    res.map_err(Into::into)
 }
 
 async fn handle_stream(
