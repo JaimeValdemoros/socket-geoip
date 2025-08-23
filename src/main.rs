@@ -1,4 +1,4 @@
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{
     Arc, OnceLock,
     atomic::{AtomicU64, Ordering},
@@ -82,13 +82,14 @@ async fn main() -> anyhow::Result<()> {
         .run_until(async move {
             loop {
                 let connection = socket.accept().await;
-                let stream = match connection {
-                    Ok((stream, _)) => stream,
+                let (stream, addr) = match connection {
+                    Ok(x) => x,
                     Err(e) => break e,
                 };
+                eprintln!("New stream: {addr}");
                 let shutdown = shutdown_clone.clone();
                 tokio::task::spawn_local(async move {
-                    if let Err(e) = handle_stream(stream, &shutdown).await {
+                    if let Err(e) = handle_stream(stream, addr, &shutdown).await {
                         eprintln!("{e:?}");
                     }
                 });
@@ -111,7 +112,11 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-async fn handle_stream(mut stream: TcpStream, token: &CancellationToken) -> anyhow::Result<()> {
+async fn handle_stream(
+    mut stream: TcpStream,
+    addr: SocketAddr,
+    token: &CancellationToken,
+) -> anyhow::Result<()> {
     let mut requests = Requests::from_split_socket(stream.split(), 10, 10);
     while let Some(Ok(Some(request))) = requests.next().with_cancellation_token(token).await {
         TICKER.fetch_add(1, Ordering::Relaxed);
@@ -127,6 +132,7 @@ async fn handle_stream(mut stream: TcpStream, token: &CancellationToken) -> anyh
             })
             .await?;
     }
+    eprintln!("Stream terminated: {addr}");
     anyhow::Ok(())
 }
 
