@@ -64,7 +64,9 @@ async fn main() -> anyhow::Result<()> {
         local.spawn_local(async move {
             let mut last_ticker = 0;
             loop {
-                tokio::time::sleep(timeout).await;
+                tokio::time::sleep(timeout)
+                    .with_cancellation_token(&shutdown)
+                    .await;
                 let new_ticker = TICKER.load(Ordering::Relaxed);
                 if last_ticker == new_ticker {
                     eprintln!("idle, exiting");
