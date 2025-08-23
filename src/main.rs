@@ -44,11 +44,19 @@ async fn main() -> anyhow::Result<()> {
 
     let shutdown = CancellationToken::new();
 
-    ctrlc::set_handler({
-        eprintln!("Received SIGINT, exiting...");
+    local.spawn_local({
         let shutdown = shutdown.clone();
-        move || shutdown.cancel()
-    }).expect("Faield to register ctrlc handler");
+        async move {
+            tokio::select! {
+                res = tokio::signal::ctrl_c() => {
+                    res.expect("ctrl-c handler failed");
+                    eprintln!("Received SIGINT signal, triggering shutdown");
+                    shutdown.cancel();
+                }
+                () = shutdown.cancelled() => (),
+            }
+        }
+    });
 
     if let Ok(timeout_secs) = std::env::var("TIMEOUT_SECS") {
         let shutdown = shutdown.clone();
