@@ -44,6 +44,12 @@ async fn main() -> anyhow::Result<()> {
 
     let shutdown = CancellationToken::new();
 
+    ctrlc::set_handler({
+        eprintln!("Received SIGINT, exiting...");
+        let shutdown = shutdown.clone();
+        move || shutdown.cancel()
+    }).expect("Faield to register ctrlc handler");
+
     if let Ok(timeout_secs) = std::env::var("TIMEOUT_SECS") {
         let shutdown = shutdown.clone();
         let timeout = Duration::from_secs(timeout_secs.parse().unwrap());
@@ -84,8 +90,10 @@ async fn main() -> anyhow::Result<()> {
         .await;
 
     // wait for remaining spawned tasks
+    eprintln!("Waiting for remaining connections to complete");
     shutdown.cancel();
     local.await;
+    eprintln!("Done waiting, shutting down");
 
     match res {
         // run_until hit an error - re-raise it

@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.99"
+ctrlc = "3.4.7"
 listenfd = "1.0.2"
 maxminddb = { version = "0.26.0", features = ["mmap"] }
 serde = { version = "1.0.219", features = ["derive"] }
