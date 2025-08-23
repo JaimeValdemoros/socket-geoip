@@ -47,13 +47,13 @@ async fn main() -> anyhow::Result<()> {
     local.spawn_local({
         let shutdown = shutdown.clone();
         async move {
-            tokio::select! {
-                res = tokio::signal::ctrl_c() => {
-                    res.expect("ctrl-c handler failed");
-                    eprintln!("Received SIGINT signal, triggering shutdown");
-                    shutdown.cancel();
-                }
-                () = shutdown.cancelled() => (),
+            if let Some(res) = tokio::signal::ctrl_c()
+                .with_cancellation_token(&shutdown)
+                .await
+            {
+                res.expect("ctrl-c handler failed");
+                eprintln!("Received SIGINT signal, triggering shutdown");
+                shutdown.cancel();
             }
         }
     });
