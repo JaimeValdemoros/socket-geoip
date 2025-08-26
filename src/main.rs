@@ -46,39 +46,31 @@ async fn async_main() -> anyhow::Result<()> {
     let local = smol::LocalExecutor::new();
 
     let signal = async_ctrlc::CtrlC::new()?;
-    local
-        .spawn(async {
-            if let Some(()) = signal.with_cancel(&token).await {
-                eprintln!("Received SIGINT signal, triggering shutdown");
-                shutdown();
-            }
-        })
-        .detach();
+    let sigint_task = local.spawn(async {
+        signal.await;
+        shutdown();
+    });
 
+    let mut timeout_task = None;
     if let Ok(timeout_secs) = std::env::var("TIMEOUT_SECS") {
-        let token = token.clone();
         let timeout = Duration::from_secs(timeout_secs.parse().unwrap());
         let shutdown = shutdown.clone();
-        local
-            .spawn(async move {
-                let mut timer = smol::Timer::interval(timeout);
-                let mut last_ticker = 0;
-                loop {
-                    if timer.next().with_cancel(&token).await.is_none() {
-                        // Cancelled, break immediately
-                        break;
-                    }
-                    let new_ticker = TICKER.load(Ordering::Relaxed);
-                    if last_ticker == new_ticker {
-                        eprintln!("idle, exiting");
-                        eprintln!("{new_ticker} requests served");
-                        shutdown();
-                        break;
-                    }
-                    last_ticker = new_ticker;
+        let task = local.spawn(async move {
+            let mut timer = smol::Timer::interval(timeout);
+            let mut last_ticker = 0;
+            loop {
+                timer.next().await;
+                let new_ticker = TICKER.load(Ordering::Relaxed);
+                if last_ticker == new_ticker {
+                    eprintln!("idle, exiting");
+                    eprintln!("{new_ticker} requests served");
+                    shutdown();
+                    break;
                 }
-            })
-            .detach();
+                last_ticker = new_ticker;
+            }
+        });
+        timeout_task = Some(task);
     };
 
     let res = local
@@ -107,11 +99,31 @@ async fn async_main() -> anyhow::Result<()> {
 
     // wait for remaining spawned tasks
     eprintln!("Waiting for remaining connections to complete");
-    shutdown();
-    while !local.is_empty() {
-        local.tick().await;
+    sigint_task.cancel().await;
+    if let Some(timeout_task) = timeout_task {
+        timeout_task.cancel().await;
     }
-    eprintln!("Done waiting, shutting down");
+    shutdown();
+
+    let timed_out = smol::future::race(
+        async {
+            smol::Timer::after(Duration::from_secs(20)).await;
+            true
+        },
+        async {
+            while !local.is_empty() {
+                local.tick().await;
+            }
+            false
+        },
+    )
+    .await;
+
+    if timed_out {
+        eprintln!("Timed out waiting for connections, exiting");
+    } else {
+        eprintln!("Done waiting, shutting down");
+    }
 
     res.map_err(Into::into)
 }
