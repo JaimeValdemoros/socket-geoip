@@ -99,14 +99,20 @@ async fn async_main() -> anyhow::Result<()> {
         })
         .await;
 
+    // Cancel background tasks
+    eprintln!("Cancelling background tasks");
+    local
+        .run(async {
+            sigint_task.cancel().await;
+            if let Some(timeout_task) = timeout_task {
+                timeout_task.cancel().await;
+            }
+        })
+        .await;
+
     // wait for remaining spawned tasks
     eprintln!("Waiting for remaining connections to complete");
-    sigint_task.cancel().await;
-    if let Some(timeout_task) = timeout_task {
-        timeout_task.cancel().await;
-    }
     shutdown();
-
     let timed_out = (async {
         while !local.is_empty() {
             local.tick().await;
