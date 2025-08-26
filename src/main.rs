@@ -1,8 +1,6 @@
+use std::cell::Cell;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::{
-    Arc, OnceLock,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use async_compat::CompatExt;
@@ -17,7 +15,6 @@ mod timeout;
 use cancel::FutureExt as _;
 use timeout::FutureExt as _;
 
-static TICKER: AtomicU64 = AtomicU64::new(0);
 static READER: OnceLock<Reader<Mmap>> = OnceLock::new();
 
 #[derive(Debug, serde::Serialize)]
@@ -45,6 +42,9 @@ async fn async_main() -> anyhow::Result<()> {
     };
 
     let (token, shutdown) = cancel::Token::new();
+    let shutdown = &shutdown;
+    let ticker = &Cell::new(0);
+
     let local = smol::LocalExecutor::new();
 
     let signal = async_ctrlc::CtrlC::new()?;
@@ -56,13 +56,12 @@ async fn async_main() -> anyhow::Result<()> {
     let mut timeout_task = None;
     if let Ok(timeout_secs) = std::env::var("TIMEOUT_SECS") {
         let timeout = Duration::from_secs(timeout_secs.parse().unwrap());
-        let shutdown = shutdown.clone();
         let task = local.spawn(async move {
             let mut timer = smol::Timer::interval(timeout);
             let mut last_ticker = 0;
             loop {
                 timer.next().await;
-                let new_ticker = TICKER.load(Ordering::Relaxed);
+                let new_ticker = ticker.get();
                 if last_ticker == new_ticker {
                     eprintln!("idle, exiting");
                     eprintln!("{new_ticker} requests served");
@@ -89,7 +88,7 @@ async fn async_main() -> anyhow::Result<()> {
                     let token = token.clone();
                     local
                         .spawn(async move {
-                            if let Err(e) = handle_stream(stream, addr, &token).await {
+                            if let Err(e) = handle_stream(stream, addr, &token, &ticker).await {
                                 eprintln!("{e:?}");
                             }
                         })
@@ -135,11 +134,12 @@ async fn handle_stream(
     stream: smol::net::TcpStream,
     addr: SocketAddr,
     token: &cancel::Token,
+    ticker: &Cell<u64>,
 ) -> anyhow::Result<()> {
     let (read, write) = smol::io::split(stream);
     let mut requests = Requests::new(read.compat(), write.compat(), 10, 10);
     while let Some(Ok(Some(request))) = requests.next().with_cancel(&token).await {
-        TICKER.fetch_add(1, Ordering::Relaxed);
+        ticker.update(|x| x + 1);
         request
             .process(|request| async move {
                 match handle_req(request).timeout(Duration::from_secs(10)).await {
