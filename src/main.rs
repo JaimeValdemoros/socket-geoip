@@ -12,8 +12,10 @@ use tokio::{
     task::{LocalSet, spawn_blocking},
 };
 use tokio_fastcgi::{Request, RequestResult, Requests};
-use tokio_util::future::FutureExt;
-use tokio_util::sync::CancellationToken;
+
+mod cancel;
+
+use cancel::FutureExt as _;
 
 static TICKER: AtomicU64 = AtomicU64::new(0);
 static READER: OnceLock<Reader<Mmap>> = OnceLock::new();
@@ -42,30 +44,29 @@ async fn main() -> anyhow::Result<()> {
 
     let local = LocalSet::new();
 
-    let shutdown = CancellationToken::new();
+    let (token, shutdown) = cancel::Token::new();
 
     local.spawn_local({
+        let token = token.clone();
         let shutdown = shutdown.clone();
         async move {
-            if let Some(res) = tokio::signal::ctrl_c()
-                .with_cancellation_token(&shutdown)
-                .await
-            {
+            if let Some(res) = tokio::signal::ctrl_c().with_cancel(&token).await {
                 res.expect("ctrl-c handler failed");
                 eprintln!("Received SIGINT signal, triggering shutdown");
-                shutdown.cancel();
+                shutdown();
             }
         }
     });
 
     if let Ok(timeout_secs) = std::env::var("TIMEOUT_SECS") {
-        let shutdown = shutdown.clone();
+        let token = token.clone();
         let timeout = Duration::from_secs(timeout_secs.parse().unwrap());
+        let shutdown = shutdown.clone();
         local.spawn_local(async move {
             let mut last_ticker = 0;
             loop {
                 if tokio::time::sleep(timeout)
-                    .with_cancellation_token(&shutdown)
+                    .with_cancel(&token)
                     .await
                     .is_none()
                 {
@@ -76,7 +77,7 @@ async fn main() -> anyhow::Result<()> {
                 if last_ticker == new_ticker {
                     eprintln!("idle, exiting");
                     eprintln!("{new_ticker} requests served");
-                    shutdown.cancel();
+                    shutdown();
                     break;
                 }
                 last_ticker = new_ticker;
@@ -86,19 +87,19 @@ async fn main() -> anyhow::Result<()> {
 
     let res = local
         .run_until({
-            let shutdown = shutdown.clone();
+            let token = token.clone();
             async move {
                 loop {
-                    let connection = socket.accept().with_cancellation_token(&shutdown).await;
+                    let connection = socket.accept().with_cancel(&token).await;
                     let (stream, addr) = match connection {
                         None => break Ok(()),
                         Some(Err(e)) => break Err(e),
                         Some(Ok(x)) => x,
                     };
                     eprintln!("New stream: {addr}");
-                    let shutdown = shutdown.clone();
+                    let token = token.clone();
                     tokio::task::spawn_local(async move {
-                        if let Err(e) = handle_stream(stream, addr, &shutdown).await {
+                        if let Err(e) = handle_stream(stream, addr, &token).await {
                             eprintln!("{e:?}");
                         }
                     });
@@ -109,7 +110,7 @@ async fn main() -> anyhow::Result<()> {
 
     // wait for remaining spawned tasks
     eprintln!("Waiting for remaining connections to complete");
-    shutdown.cancel();
+    shutdown();
     local.await;
     eprintln!("Done waiting, shutting down");
 
@@ -119,10 +120,10 @@ async fn main() -> anyhow::Result<()> {
 async fn handle_stream(
     mut stream: TcpStream,
     addr: SocketAddr,
-    token: &CancellationToken,
+    token: &cancel::Token,
 ) -> anyhow::Result<()> {
     let mut requests = Requests::from_split_socket(stream.split(), 10, 10);
-    while let Some(Ok(Some(request))) = requests.next().with_cancellation_token(token).await {
+    while let Some(Ok(Some(request))) = requests.next().with_cancel(&token).await {
         TICKER.fetch_add(1, Ordering::Relaxed);
         request
             .process(|request| async move {
