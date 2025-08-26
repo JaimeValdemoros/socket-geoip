@@ -5,12 +5,10 @@ use std::sync::{
 };
 use std::time::Duration;
 
+use async_compat::CompatExt;
+use futures::StreamExt;
 use listenfd::ListenFd;
 use maxminddb::{Mmap, Reader};
-use tokio::{
-    net::{TcpListener, TcpStream, tcp::WriteHalf},
-    task::{LocalSet, spawn_blocking},
-};
 use tokio_fastcgi::{Request, RequestResult, Requests};
 
 mod cancel;
@@ -27,12 +25,14 @@ struct Output<'a> {
     data: Option<maxminddb::geoip2::City<'a>>,
 }
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    smol::block_on(async_main())
+}
+
+async fn async_main() -> anyhow::Result<()> {
     let mut listenfd = ListenFd::from_env();
     let socket = listenfd.take_tcp_listener(0)?.unwrap();
-    socket.set_nonblocking(true)?;
-    let socket = TcpListener::from_std(socket)?;
+    let socket = smol::net::TcpListener::from(smol::Async::new(socket)?);
 
     if let Some(reader) = std::env::var("DB_FILE")
         .ok()
@@ -42,53 +42,48 @@ async fn main() -> anyhow::Result<()> {
         READER.set(reader).expect("READER already set");
     };
 
-    let local = LocalSet::new();
-
     let (token, shutdown) = cancel::Token::new();
+    let local = smol::LocalExecutor::new();
 
-    local.spawn_local({
-        let token = token.clone();
-        let shutdown = shutdown.clone();
-        async move {
-            if let Some(res) = tokio::signal::ctrl_c().with_cancel(&token).await {
-                res.expect("ctrl-c handler failed");
+    let signal = async_ctrlc::CtrlC::new()?;
+    local
+        .spawn(async {
+            if let Some(()) = signal.with_cancel(&token).await {
                 eprintln!("Received SIGINT signal, triggering shutdown");
                 shutdown();
             }
-        }
-    });
+        })
+        .detach();
 
     if let Ok(timeout_secs) = std::env::var("TIMEOUT_SECS") {
         let token = token.clone();
         let timeout = Duration::from_secs(timeout_secs.parse().unwrap());
         let shutdown = shutdown.clone();
-        local.spawn_local(async move {
-            let mut last_ticker = 0;
-            loop {
-                if tokio::time::sleep(timeout)
-                    .with_cancel(&token)
-                    .await
-                    .is_none()
-                {
-                    // Cancelled, break immediately
-                    break;
+        local
+            .spawn(async move {
+                let mut timer = smol::Timer::interval(timeout);
+                let mut last_ticker = 0;
+                loop {
+                    if timer.next().with_cancel(&token).await.is_none() {
+                        // Cancelled, break immediately
+                        break;
+                    }
+                    let new_ticker = TICKER.load(Ordering::Relaxed);
+                    if last_ticker == new_ticker {
+                        eprintln!("idle, exiting");
+                        eprintln!("{new_ticker} requests served");
+                        shutdown();
+                        break;
+                    }
+                    last_ticker = new_ticker;
                 }
-                let new_ticker = TICKER.load(Ordering::Relaxed);
-                if last_ticker == new_ticker {
-                    eprintln!("idle, exiting");
-                    eprintln!("{new_ticker} requests served");
-                    shutdown();
-                    break;
-                }
-                last_ticker = new_ticker;
-            }
-        });
+            })
+            .detach();
     };
 
     let res = local
-        .run_until({
-            let token = token.clone();
-            async move {
+        .run({
+            async {
                 loop {
                     let connection = socket.accept().with_cancel(&token).await;
                     let (stream, addr) = match connection {
@@ -98,11 +93,13 @@ async fn main() -> anyhow::Result<()> {
                     };
                     eprintln!("New stream: {addr}");
                     let token = token.clone();
-                    tokio::task::spawn_local(async move {
-                        if let Err(e) = handle_stream(stream, addr, &token).await {
-                            eprintln!("{e:?}");
-                        }
-                    });
+                    local
+                        .spawn(async move {
+                            if let Err(e) = handle_stream(stream, addr, &token).await {
+                                eprintln!("{e:?}");
+                            }
+                        })
+                        .detach();
                 }
             }
         })
@@ -111,18 +108,21 @@ async fn main() -> anyhow::Result<()> {
     // wait for remaining spawned tasks
     eprintln!("Waiting for remaining connections to complete");
     shutdown();
-    local.await;
+    while !local.is_empty() {
+        local.tick().await;
+    }
     eprintln!("Done waiting, shutting down");
 
     res.map_err(Into::into)
 }
 
 async fn handle_stream(
-    mut stream: TcpStream,
+    stream: smol::net::TcpStream,
     addr: SocketAddr,
     token: &cancel::Token,
 ) -> anyhow::Result<()> {
-    let mut requests = Requests::from_split_socket(stream.split(), 10, 10);
+    let (read, write) = smol::io::split(stream);
+    let mut requests = Requests::new(read.compat(), write.compat(), 10, 10);
     while let Some(Ok(Some(request))) = requests.next().with_cancel(&token).await {
         TICKER.fetch_add(1, Ordering::Relaxed);
         request
@@ -141,7 +141,7 @@ async fn handle_stream(
     anyhow::Ok(())
 }
 
-async fn handle_req(req: Arc<Request<WriteHalf<'_>>>) -> anyhow::Result<()> {
+async fn handle_req(req: Arc<Request<impl tokio::io::AsyncWrite + Unpin>>) -> anyhow::Result<()> {
     let Some(addr) = req.get_str_param("REMOTE_ADDR") else {
         anyhow::bail!("No REMOTE_ADDR set");
     };
@@ -149,7 +149,7 @@ async fn handle_req(req: Arc<Request<WriteHalf<'_>>>) -> anyhow::Result<()> {
     let output = Output {
         ip,
         data: match READER.get() {
-            Some(r) => spawn_blocking(move || r.lookup(ip)).await??,
+            Some(r) => smol::unblock(move || r.lookup(ip)).await?,
             None => None,
         },
     };

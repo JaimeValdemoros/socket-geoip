@@ -5,11 +5,14 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.99"
+async-compat = "0.2.5"
+async-ctrlc = "1.2.0"
 futures = "0.3.31"
 listenfd = "1.0.2"
 maxminddb = { version = "0.26.0", features = ["mmap"] }
 oneshot = "0.1.11"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = { version = "1.0.143", features = ["preserve_order"] }
-tokio = { version = "1.47.1", features = ["macros", "net", "signal", "time"] }
+smol = "2.0.2"
+tokio = "1.47.1"
 tokio-fastcgi = "1.2.0"
