@@ -12,8 +12,10 @@ use maxminddb::{Mmap, Reader};
 use tokio_fastcgi::{Request, RequestResult, Requests};
 
 mod cancel;
+mod timeout;
 
 use cancel::FutureExt as _;
+use timeout::FutureExt as _;
 
 static TICKER: AtomicU64 = AtomicU64::new(0);
 static READER: OnceLock<Reader<Mmap>> = OnceLock::new();
@@ -105,19 +107,14 @@ async fn async_main() -> anyhow::Result<()> {
     }
     shutdown();
 
-    let timed_out = smol::future::race(
-        async {
-            smol::Timer::after(Duration::from_secs(20)).await;
-            true
-        },
-        async {
-            while !local.is_empty() {
-                local.tick().await;
-            }
-            false
-        },
-    )
-    .await;
+    let timed_out = (async {
+        while !local.is_empty() {
+            local.tick().await;
+        }
+    })
+    .timeout(Duration::from_secs(20))
+    .await
+    .is_none();
 
     if timed_out {
         eprintln!("Timed out waiting for connections, exiting");
@@ -139,12 +136,13 @@ async fn handle_stream(
         TICKER.fetch_add(1, Ordering::Relaxed);
         request
             .process(|request| async move {
-                match handle_req(request).await {
-                    Ok(()) => RequestResult::Complete(0),
-                    Err(e) => {
+                match handle_req(request).timeout(Duration::from_secs(10)).await {
+                    Some(Ok(())) => RequestResult::Complete(0),
+                    Some(Err(e)) => {
                         eprintln!("{e}");
                         RequestResult::Complete(1)
                     }
+                    None => RequestResult::Overloaded,
                 }
             })
             .await?;
