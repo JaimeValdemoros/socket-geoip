@@ -75,25 +75,23 @@ async fn async_main() -> anyhow::Result<()> {
     };
 
     let res = local
-        .run({
-            async {
-                loop {
-                    let connection = socket.accept().with_cancel(&token).await;
-                    let (stream, addr) = match connection {
-                        None => break Ok(()),
-                        Some(Err(e)) => break Err(e),
-                        Some(Ok(x)) => x,
-                    };
-                    eprintln!("New stream: {addr}");
-                    let token = token.clone();
-                    local
-                        .spawn(async move {
-                            if let Err(e) = handle_stream(stream, addr, &token, &ticker).await {
-                                eprintln!("{e:?}");
-                            }
-                        })
-                        .detach();
-                }
+        .run(async {
+            loop {
+                let connection = socket.accept().with_cancel(&token).await;
+                let (stream, addr) = match connection {
+                    None => break Ok(()),
+                    Some(Err(e)) => break Err(e),
+                    Some(Ok(x)) => x,
+                };
+                eprintln!("New stream: {addr}");
+                let token = token.clone();
+                local
+                    .spawn(async move {
+                        if let Err(e) = handle_stream(stream, addr, &token, &ticker).await {
+                            eprintln!("{e:?}");
+                        }
+                    })
+                    .detach();
             }
         })
         .await;
